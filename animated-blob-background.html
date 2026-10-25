@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        overflow: hidden;
+      }
+
+      svg {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* path {
+        stroke: #111;
+        stroke-width: 6;
+        stroke-linejoin: round;
+      } */
+    </style>
+  </head>
+
+  <body>
+    <svg></svg>
+
+    <script type="module">
+      import { createNoise2D } from "https://cdn.skypack.dev/simplex-noise";
+
+      const svg = document.querySelector("svg");
+
+      // Each entry is an independent field of blobs, drawn in order (later
+      // layers sit on top). Copy an entry and tweak it to add a new layer.
+      const LAYERS = [
+        {
+          // Deepest background: large, sparse, barely-moving, dim maroon.
+          anchors: 12,
+          timeScale: 0.000008,
+          individualScale: 0.5,
+          individualAmplitudeRatio: 0.3,
+
+          spacing: 260,
+          noiseScale: 0.0012,
+          densityThreshold: 0.3,
+
+          radiusRatio: 0.55,
+          radiusVarianceBase: 0.85,
+          radiusVarianceRange: 0.3,
+
+          strokeWidth: 6,
+          colors: ["#7a1f1f", "#5c1414", "#8f2d2d"],
+          parallaxRatio: 0.15,
+        },
+        {
+          anchors: 14,
+          timeScale: 0.00002,
+          individualScale: 0.5,
+          individualAmplitudeRatio: 0.35,
+
+          // Candidate placements are scattered at random, then kept or
+          // rejected by sampling this 2D noise map — high spots cluster
+          // blobs tightly, low spots stay empty, with no grid underneath.
+          spacing: 150,
+          noiseScale: 0.004,
+          densityThreshold: -0.1,
+
+          radiusRatio: 0.5,
+          radiusVarianceBase: 0.85,
+          radiusVarianceRange: 0.3,
+
+          strokeWidth: 6,
+          colors: ["#ff5a36", "#c1272d", "#ff7566"],
+          parallaxRatio: 0.2,
+        },
+        {
+          // Burnt orange, denser mid layer.
+          anchors: 14,
+          timeScale: 0.00006,
+          individualScale: 0.5,
+          individualAmplitudeRatio: 0.35,
+
+          spacing: 170,
+          noiseScale: 0.003,
+          densityThreshold: -0.05,
+
+          radiusRatio: 0.42,
+          radiusVarianceBase: 0.85,
+          radiusVarianceRange: 0.3,
+
+          strokeWidth: 6,
+          colors: ["#e8590c", "#f76707", "#d9480f"],
+          parallaxRatio: 0.25,
+        },
+        {
+          anchors: 14,
+          timeScale: 0.00012,
+          individualScale: 0.5,
+          individualAmplitudeRatio: 0.35,
+
+          spacing: 190,
+          noiseScale: 0.0018,
+          densityThreshold: 0.15,
+
+          radiusRatio: 0.45,
+          radiusVarianceBase: 0.85,
+          radiusVarianceRange: 0.3,
+
+          strokeWidth: 6,
+          colors: ["#ffd166", "#ffb347", "#ff8c42"],
+          parallaxRatio: 0.3,
+        },
+        {
+          // Amber accent, smaller and sparser.
+          anchors: 12,
+          timeScale: 0.00018,
+          individualScale: 0.55,
+          individualAmplitudeRatio: 0.4,
+
+          spacing: 130,
+          noiseScale: 0.0035,
+          densityThreshold: 0.25,
+
+          radiusRatio: 0.4,
+          radiusVarianceBase: 0.85,
+          radiusVarianceRange: 0.3,
+
+          strokeWidth: 4,
+          colors: ["#ffd43b", "#fcc419", "#ffe066"],
+          parallaxRatio: 0.35,
+        },
+      ];
+
+      for (const layer of LAYERS) {
+        // Separate noise fields per layer: one lays out where its blobs
+        // go, the other drives each of its blobs' own undulation.
+        layer.fieldNoise = createNoise2D();
+        layer.noise = createNoise2D();
+
+        layer.group = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "g",
+        );
+        layer.group.style.setProperty(
+          "--stroke-width",
+          `${layer.strokeWidth}px`,
+        );
+        svg.appendChild(layer.group);
+
+        layer.blobs = [];
+      }
+
+      function buildLayer(layer, width, height) {
+        const {
+          fieldNoise,
+          spacing,
+          noiseScale,
+          densityThreshold,
+          radiusRatio,
+          radiusVarianceBase,
+          radiusVarianceRange,
+          colors,
+        } = layer;
+
+        layer.group.replaceChildren();
+        layer.blobs = [];
+
+        // Overscan the placement area so a layer sliding under parallax
+        // never uncovers empty space at the viewport edges. Scaled by this
+        // layer's own ratio since faster layers can slide further.
+        const margin = PARALLAX_MAX_OFFSET * layer.parallaxRatio;
+        const areaWidth = width + margin * 2;
+        const areaHeight = height + margin * 2;
+
+        // Dart-throwing: try random points, keep the ones the noise map
+        // clears. Accepted points still reject near-duplicates, with the
+        // minimum distance shrinking in strong spots so clusters can pack
+        // tighter than the sparse in-between areas.
+        const attempts = Math.round(
+          ((areaWidth * areaHeight) / (spacing * spacing)) * 30,
+        );
+
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          const x = Math.random() * areaWidth - margin;
+          const y = Math.random() * areaHeight - margin;
+
+          const density = fieldNoise(x * noiseScale, y * noiseScale);
+          if (density < densityThreshold) continue;
+
+          const strength =
+            (density - densityThreshold) / (1 - densityThreshold);
+          const minDistance = spacing * (1 - strength * 0.4);
+
+          let tooClose = false;
+          for (const blob of layer.blobs) {
+            const dx = blob.cx - x;
+            const dy = blob.cy - y;
+            if (dx * dx + dy * dy < minDistance * minDistance) {
+              tooClose = true;
+              break;
+            }
+          }
+          if (tooClose) continue;
+
+          const radius =
+            spacing *
+            radiusRatio *
+            (radiusVarianceBase + strength * radiusVarianceRange);
+
+          const path = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "path",
+          );
+          path.style.fill = colors[layer.blobs.length % colors.length];
+          layer.group.appendChild(path);
+
+          layer.blobs.push({
+            cx: x,
+            cy: y,
+            radius,
+            seed: layer.blobs.length * 17.3,
+            path,
+          });
+        }
+      }
+
+      // Parallax: each layer slides (translates) as the cursor moves, at
+      // its own ratio, so nearer-feeling layers shift further than others
+      // — the classic 2D trick for implying a 3D, camera-tilting scene.
+      // The offset is chased with a damped spring rather than a straight
+      // ease, so it carries a little momentum and settles instead of
+      // snapping — closer to how a liquid surface would slosh and settle.
+      const PARALLAX_MAX_OFFSET = 50; // px, at full ratio, cursor at the edge
+      const SPRING_STIFFNESS = 0.045;
+      const SPRING_DAMPING = 0.88;
+
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      const pointerOffset = { x: 0, y: 0 }; // normalized -1..1 from center
+      const smoothedOffset = { x: 0, y: 0 };
+      const offsetVelocity = { x: 0, y: 0 };
+
+      window.addEventListener("pointermove", (event) => {
+        pointerOffset.x = (event.clientX / viewport.width) * 2 - 1;
+        pointerOffset.y = (event.clientY / viewport.height) * 2 - 1;
+      });
+
+      function updateParallax() {
+        offsetVelocity.x =
+          (offsetVelocity.x +
+            (pointerOffset.x - smoothedOffset.x) * SPRING_STIFFNESS) *
+          SPRING_DAMPING;
+        offsetVelocity.y =
+          (offsetVelocity.y +
+            (pointerOffset.y - smoothedOffset.y) * SPRING_STIFFNESS) *
+          SPRING_DAMPING;
+
+        smoothedOffset.x += offsetVelocity.x;
+        smoothedOffset.y += offsetVelocity.y;
+
+        for (const layer of LAYERS) {
+          const dx =
+            smoothedOffset.x * PARALLAX_MAX_OFFSET * layer.parallaxRatio;
+          const dy =
+            smoothedOffset.y * PARALLAX_MAX_OFFSET * layer.parallaxRatio;
+
+          layer.group.setAttribute("transform", `translate(${dx} ${dy})`);
+        }
+      }
+
+      function buildAllLayers() {
+        viewport.width = window.innerWidth;
+        viewport.height = window.innerHeight;
+
+        svg.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
+
+        for (const layer of LAYERS)
+          buildLayer(layer, viewport.width, viewport.height);
+      }
+
+      function blobPath(points) {
+        let d = `M ${points[0].x} ${points[0].y}`;
+
+        for (let i = 0; i < points.length; i++) {
+          const p0 = points[(i - 1 + points.length) % points.length];
+          const p1 = points[i];
+          const p2 = points[(i + 1) % points.length];
+          const p3 = points[(i + 2) % points.length];
+
+          const cp1x = p1.x + (p2.x - p0.x) / 6;
+          const cp1y = p1.y + (p2.y - p0.y) / 6;
+
+          const cp2x = p2.x - (p3.x - p1.x) / 6;
+          const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+          d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
+        }
+
+        return d + " Z";
+      }
+
+      function animate(time) {
+        updateParallax();
+
+        for (const layer of LAYERS) {
+          const {
+            anchors,
+            timeScale,
+            individualScale,
+            individualAmplitudeRatio,
+            noise,
+          } = layer;
+
+          for (const blob of layer.blobs) {
+            const pts = [];
+
+            for (let i = 0; i < anchors; i++) {
+              const angle = (i / anchors) * Math.PI * 2;
+
+              const individual = noise(
+                Math.cos(angle) * individualScale + blob.seed,
+                Math.sin(angle) * individualScale + time * timeScale,
+              );
+
+              const r =
+                blob.radius +
+                individual * blob.radius * individualAmplitudeRatio;
+
+              pts.push({
+                x: blob.cx + Math.cos(angle) * r,
+                y: blob.cy + Math.sin(angle) * r,
+              });
+            }
+
+            blob.path.setAttribute("d", blobPath(pts));
+          }
+        }
+
+        requestAnimationFrame(animate);
+      }
+
+      buildAllLayers();
+      window.addEventListener("resize", buildAllLayers);
+      requestAnimationFrame(animate);
+    </script>
+  </body>
+</html>

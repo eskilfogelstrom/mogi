@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Scroll layer stack — prototype</title>
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #fff;
+        color: #161310;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+
+      /* Pure scroll-distance driver — the stage below is fixed and never
+         actually moves; this is just what makes the page tall enough to
+         scroll through all 6 layers. One 100vh chunk per layer removal. */
+      .spacer {
+        height: 500vh;
+      }
+
+      .stage {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        background: #fff;
+      }
+
+      .layer {
+        position: absolute;
+        inset: 0;
+      }
+
+      .layer.content {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 2rem;
+        box-sizing: border-box;
+        will-change: opacity, transform;
+      }
+
+      .content-box {
+        color: #f6f0e8;
+        border-radius: 1rem;
+        padding: 2.5rem 3rem;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+
+      /* Work layer breaks from the centered flex treatment: the photo
+         itself (clipped into a blob shape below) does the framing, so
+         it floats large and off-center instead of sitting inside a box,
+         and the caption is just plain text tucked into the space it
+         leaves behind. */
+      .layer.content.photo-feature {
+        display: block;
+        text-align: left;
+        padding: 0;
+      }
+
+      /* Text and photo are both organic blobs now — same clipped-shape
+         language as the ambient field — sitting side by side, roughly
+         centered as a pair with a slight overlap, rather than a
+         rectangular card the photo spills out of. */
+      .text-blob {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: min(26rem, 58vw);
+        aspect-ratio: 1 / 1;
+        transform: translate(-120%, -80%);
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 3.5rem;
+        background: #f6f0e8;
+        color: #161310;
+        clip-path: url(#work-text-clip);
+      }
+
+      .photo-blob-svg {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: min(55rem, 58vw);
+        transform: translate(-33%, -50%);
+        overflow: visible;
+        filter: drop-shadow(0 14px 30px rgba(0, 0, 0, 0.3));
+      }
+
+      /* Contact has no photo pairing, just one blob — sits in the
+         parent's normal flex-centered flow instead of needing the
+         absolute positioning Work's pair requires. */
+      .contact-text-blob {
+        width: min(26rem, 70vw);
+        aspect-ratio: 1 / 1;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 3.5rem;
+        background: #f6f0e8;
+        color: #161310;
+        clip-path: url(#contact-text-clip);
+      }
+
+      .layer.blobs svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        pointer-events: none;
+        /* Blur then snap the alpha back to solid with a steep curve: at
+           normal spacing each blob looks ~unchanged, but once two blobs'
+           blurred halos overlap (as they converge on a shared attractor)
+           the curve fuses them into one shape instead of two overlapping
+           circles — the classic SVG "goo" trick. */
+        filter: url(#blob-goo);
+      }
+
+      h1 {
+        font-size: clamp(2rem, 6vw, 4rem);
+        margin: 0 0 0.5rem;
+        font-weight: 500;
+      }
+
+      p {
+        max-width: 32rem;
+        opacity: 0.7;
+        line-height: 1.5;
+      }
+
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        font-size: 0.75rem;
+        opacity: 0.5;
+        margin-bottom: 1rem;
+      }
+
+      .hud {
+        position: fixed;
+        bottom: 1rem;
+        right: 1rem;
+        z-index: 100;
+        font:
+          11px/1.5 ui-monospace,
+          monospace;
+        background: rgba(0, 0, 0, 0.55);
+        color: #f6f0e8;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 0.5rem 0.75rem;
+        white-space: pre;
+      }
+
+      .scroll-hint {
+        position: absolute;
+        bottom: 2rem;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 0.75rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        opacity: 0.4;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- Shared goo filter, referenced by every blob layer's svg via
+         `filter: url(#blob-goo)` above. Defined once so all three layers
+         merge with identical character. -->
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <filter id="blob-goo">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
+          <feColorMatrix
+            in="blur"
+            mode="matrix"
+            values="1 0 0 0 0
+                    0 1 0 0 0
+                    0 0 1 0 0
+                    0 0 0 18 -7"
+          />
+        </filter>
+
+        <!-- objectBoundingBox so this clip scales with whatever pixel
+             size .text-blob actually renders at, instead of needing to
+             match a fixed coordinate system like the photo's own svg
+             viewBox does. -->
+        <clipPath id="work-text-clip" clipPathUnits="objectBoundingBox">
+          <path id="work-text-clip-path" />
+        </clipPath>
+
+        <clipPath id="contact-text-clip" clipPathUnits="objectBoundingBox">
+          <path id="contact-text-clip-path" />
+        </clipPath>
+      </defs>
+    </svg>
+
+    <div class="spacer"></div>
+
+    <!-- Six layers, stacked on top of each other from the start (z-index
+         6 down to 1) and never reflowed — scrolling just strips them away
+         top-first, one per 1/5th of the scroll, revealing whichever layer
+         was already sitting underneath. -->
+    <div class="stage">
+      <div class="layer content" id="layer-landing" style="z-index: 6">
+        <div class="content-box">
+          <div class="eyebrow">Gina — Jewelry</div>
+          <h1>Gigi</h1>
+        </div>
+        <div class="scroll-hint">Scroll ↓</div>
+      </div>
+
+      <div class="layer blobs" id="layer-blobs-1" style="z-index: 5">
+        <svg></svg>
+      </div>
+
+      <!-- opacity/transform are static here (not animated by ContentLayer
+           — see animateVisuals:false above) since the feature blobs
+           inside carry the whole enter/exit visually via their own
+           radius instead. -->
+      <div
+        class="layer content photo-feature"
+        id="layer-work"
+        style="z-index: 4"
+      >
+        <!-- Text lives in its own blob (clipped via #work-text-clip
+             above), roughly centered as a pair with the photo blob next
+             to it — same shape language as the ambient field instead of
+             a rectangular card. -->
+
+        <svg class="photo-blob-svg" viewBox="0 0 800 800">
+          <defs>
+            <clipPath id="work-photo-clip">
+              <path id="work-photo-clip-path" />
+            </clipPath>
+          </defs>
+          <image
+            href="../public/photos/ring1.png"
+            x="0"
+            y="0"
+            width="800"
+            height="800"
+            preserveAspectRatio="xMidYMid slice"
+            clip-path="url(#work-photo-clip)"
+          />
+        </svg>
+        <div class="text-blob">
+          <div class="eyebrow">Selected Work</div>
+          <h1>My stuff</h1>
+          <p>
+            A placeholder gallery grid goes here — rings, pendants, one-off
+            commissions.
+          </p>
+        </div>
+      </div>
+
+      <div class="layer blobs" id="layer-blobs-2" style="z-index: 3">
+        <svg></svg>
+      </div>
+
+      <!-- Same treatment as Work's feature blobs: opacity/transform are
+           static (not animated by ContentLayer — animateVisuals:false
+           below), the blob itself carries the whole enter/exit via its
+           own radius. Only one blob here (no photo pairing), so the
+           parent's normal flex-centering is enough to place it. -->
+      <div class="layer content" id="layer-contact" style="z-index: 2">
+        <div class="contact-text-blob">
+          <div class="eyebrow">Get in touch</div>
+          <h1>Contact</h1>
+          <p>Course bookings and commissions, handled by hand for now.</p>
+        </div>
+      </div>
+
+      <div class="layer blobs" id="layer-blobs-3" style="z-index: 1">
+        <svg></svg>
+      </div>
+    </div>
+
+    <div class="hud" id="hud"></div>
+
+    <script type="module">
+      import { createNoise2D } from "https://cdn.skypack.dev/simplex-noise";
+
+      const reducedMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+
+      function easeOutCubic(x) {
+        return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+      }
+
+      function clamp01(v) {
+        return Math.min(1, Math.max(0, v));
+      }
+
+      function blobPath(points) {
+        let d = `M ${points[0].x} ${points[0].y}`;
+
+        for (let i = 0; i < points.length; i++) {
+          const p0 = points[(i - 1 + points.length) % points.length];
+          const p1 = points[i];
+          const p2 = points[(i + 1) % points.length];
+          const p3 = points[(i + 2) % points.length];
+
+          const cp1x = p1.x + (p2.x - p0.x) / 6;
+          const cp1y = p1.y + (p2.y - p0.y) / 6;
+
+          const cp2x = p2.x - (p3.x - p1.x) / 6;
+          const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+          d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
+        }
+
+        return d + " Z";
+      }
+
+      const ANCHORS = 12;
+
+      // 5 removals (layers 0-4 each strip away) get one dedicated, non-
+      // overlapping fifth of the scroll each. Layer 5 (the final blob
+      // field) never strips — it's the resting scene once everything
+      // above it is gone.
+      const TRANSITIONS = 5;
+
+      function windowFor(index) {
+        return { start: index / TRANSITIONS, end: (index + 1) / TRANSITIONS };
+      }
+
+      class ContentLayer {
+        // enterWindowIndex is the *preceding* blob layer's own exit window
+        // — content grows/fades in over the same scroll span the blobs
+        // above it are scattering away, instead of just sitting fully
+        // opaque underneath and popping into view the instant they clear.
+        // Either can be null: Landing has no entrance (visible from load),
+        // the final layer in a stack would have no exit. animateVisuals
+        // false skips the opacity/transform zoom entirely (Work uses this
+        // — its feature blobs carry the whole enter/exit visually via
+        // their own radius) while still tracking exitEff for pointer
+        // events, so it stops intercepting clicks once scrolled past.
+        constructor(
+          el,
+          enterWindowIndex,
+          exitWindowIndex,
+          animateVisuals = true,
+        ) {
+          this.el = el;
+          this.enterWindow =
+            enterWindowIndex === null ? null : windowFor(enterWindowIndex);
+          this.exitWindow =
+            exitWindowIndex === null ? null : windowFor(exitWindowIndex);
+          this.animateVisuals = animateVisuals;
+        }
+
+        render() {
+          const enterEff = this.enterWindow
+            ? clamp01(
+                (progress - this.enterWindow.start) /
+                  (this.enterWindow.end - this.enterWindow.start),
+              )
+            : 1;
+          const exitEff = this.exitWindow
+            ? clamp01(
+                (progress - this.exitWindow.start) /
+                  (this.exitWindow.end - this.exitWindow.start),
+              )
+            : 0;
+
+          if (!this.animateVisuals) {
+            this.el.style.pointerEvents = exitEff >= 1 ? "none" : "auto";
+            return;
+          }
+
+          if (reducedMotion) {
+            this.el.style.opacity = enterEff * (1 - exitEff);
+            this.el.style.transform = "none";
+            this.el.style.pointerEvents = exitEff >= 1 ? "none" : "auto";
+            return;
+          }
+
+          const enterEased = easeOutCubic(enterEff);
+          const exitEased = easeOutCubic(exitEff);
+
+          // Scale rises monotonically the whole time a layer is relevant:
+          // 0.9 -> 1.0 settling into place on entrance, then 1.0 -> 1.25
+          // growing past the camera on exit. Opacity is entrance fading
+          // in times exit fading out, so it's 0 before entrance, 1 at
+          // rest between the two windows, 0 after exit — no branching
+          // needed, the two effects just multiply/add cleanly.
+          this.el.style.opacity = enterEased * (1 - exitEased);
+          this.el.style.transform = `scale(${0.9 + enterEased * 0.1 + exitEased * 0.25})`;
+          this.el.style.pointerEvents = exitEff >= 1 ? "none" : "auto";
+        }
+      }
+
+      class BlobLayer {
+        constructor(
+          el,
+          windowIndex,
+          palette,
+          { spacing, noiseScale, densityThreshold },
+        ) {
+          this.svg = el.querySelector("svg");
+          this.window = windowIndex === null ? null : windowFor(windowIndex);
+          this.palette = palette;
+          this.fieldNoise = createNoise2D();
+          this.noise = createNoise2D();
+          this.blobs = [];
+
+          this.spacing = spacing;
+          this.noiseScale = noiseScale;
+          this.densityThreshold = densityThreshold;
+        }
+
+        build(width, height) {
+          this.svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+          this.svg.replaceChildren();
+          this.blobs = [];
+
+          const spacing = this.spacing;
+
+          const attempts = Math.round(
+            ((width * height) / (spacing * spacing)) * 30,
+          );
+
+          for (let attempt = 0; attempt < attempts; attempt++) {
+            const x = Math.random() * width;
+            const y = Math.random() * height;
+
+            const density = this.fieldNoise(
+              x * this.noiseScale,
+              y * this.noiseScale,
+            );
+            if (density < this.densityThreshold) continue;
+
+            const strength =
+              (density - this.densityThreshold) / (1 - this.densityThreshold);
+            const minDistance = spacing * (1 - strength * 0.4);
+
+            let tooClose = false;
+            for (const blob of this.blobs) {
+              const dx = blob.cx - x;
+              const dy = blob.cy - y;
+              if (dx * dx + dy * dy < minDistance * minDistance) {
+                tooClose = true;
+                break;
+              }
+            }
+            if (tooClose) continue;
+
+            const radius = spacing * 0.45 * (0.85 + strength * 0.3);
+            const seed = this.blobs.length * 17.3;
+
+            const path = document.createElementNS(
+              "http://www.w3.org/2000/svg",
+              "path",
+            );
+            path.style.fill =
+              this.palette[this.blobs.length % this.palette.length];
+            this.svg.appendChild(path);
+
+            this.blobs.push({ cx: x, cy: y, radius, seed, path });
+
+            if (reducedMotion) {
+              const pts = [];
+              for (let i = 0; i < ANCHORS; i++) {
+                const angle = (i / ANCHORS) * Math.PI * 2;
+                pts.push({
+                  x: x + Math.cos(angle) * radius,
+                  y: y + Math.sin(angle) * radius,
+                });
+              }
+              path.setAttribute("d", blobPath(pts));
+            }
+          }
+
+          // A handful of shared attractor points, kept away from the
+          // very edge so collapsing clusters stay onscreen. Each blob
+          // drifts toward whichever is nearest — with the goo filter,
+          // blobs converging on the same attractor visually fuse into
+          // one shape before the whole cluster shrinks away.
+          const attractorCount = Math.max(2, Math.round(this.blobs.length / 5));
+          const marginX = width * 0.15;
+          const marginY = height * 0.15;
+          const attractors = [];
+          for (let i = 0; i < attractorCount; i++) {
+            attractors.push({
+              x: marginX + Math.random() * (width - marginX * 2),
+              y: marginY + Math.random() * (height - marginY * 2),
+            });
+          }
+
+          for (const blob of this.blobs) {
+            let nearest = attractors[0];
+            let nearestDist = Infinity;
+            for (const a of attractors) {
+              const dx = a.x - blob.cx;
+              const dy = a.y - blob.cy;
+              const d = dx * dx + dy * dy;
+              if (d < nearestDist) {
+                nearestDist = d;
+                nearest = a;
+              }
+            }
+            blob.targetX = nearest.x;
+            blob.targetY = nearest.y;
+          }
+
+          // Exposed so the Work layer's feature blobs can seed their
+          // entrance from wherever this field's blobs are converging to.
+          this.attractors = attractors;
+        }
+
+        render(time) {
+          let eff = 0;
+
+          if (this.window) {
+            const raw =
+              (progress - this.window.start) /
+              (this.window.end - this.window.start);
+            eff = clamp01(raw);
+          }
+
+          // Ambient field desaturates as the landing page is scrolled
+          // away, then stays grayscale for the rest of the page — keeps
+          // the field as quiet supporting texture so color reads as a
+          // deliberate accent (the feature blobs) rather than everywhere.
+          this.svg.style.filter = `url(#blob-goo) grayscale(0))})`;
+
+          // Reduced motion: opacity alone carries the reveal, geometry
+          // was drawn once (static) in build() and never recomputed.
+          if (reducedMotion) {
+            this.svg.style.opacity = 1 - eff;
+            return;
+          }
+
+          // Position converges quickly (easeOut — fast start, settles as
+          // it nears the attractor); the collapse (shrink + fade) stays
+          // near 1 for most of the window so blobs have time to actually
+          // overlap and fuse before rapidly shrinking away right at the
+          // end — that's what gives the goo filter something to merge.
+          const moveEased = easeOutCubic(eff);
+          const collapse = 1 - Math.pow(eff, 3);
+
+          for (const blob of this.blobs) {
+            const cx = blob.cx + (blob.targetX - blob.cx) * moveEased;
+            const cy = blob.cy + (blob.targetY - blob.cy) * moveEased;
+            const currentRadius = blob.radius * collapse;
+
+            blob.path.style.opacity = collapse;
+
+            const pts = [];
+            for (let i = 0; i < ANCHORS; i++) {
+              const angle = (i / ANCHORS) * Math.PI * 2;
+              const individual = this.noise(
+                Math.cos(angle) * 0.5 + blob.seed,
+                Math.sin(angle) * 0.5 + time * 0.00006,
+              );
+              const r = currentRadius + individual * currentRadius * 0.35;
+
+              pts.push({
+                x: cx + Math.cos(angle) * r,
+                y: cy + Math.sin(angle) * r,
+              });
+            }
+            blob.path.setAttribute("d", blobPath(pts));
+          }
+        }
+      }
+
+      // The Work layer's two feature blobs (photo + text) aren't
+      // BlobLayer members — they don't scatter/merge with scroll, just
+      // idle with the same gentle per-anchor noise wobble as the ambient
+      // field, at much lower amplitude so they read as stable content
+      // rather than melting. Their enter/exit fade+scale comes for free
+      // from ContentLayer above, since both are children of #layer-work.
+      // Coordinates can be in any unit — pixels for the photo (matching
+      // its own svg viewBox), 0..1 fractions for the text blob (matching
+      // its clipPath's objectBoundingBox units) — the math is the same.
+      class OrganicShape {
+        constructor(pathEl, { cx, cy, radius, seed, ampRatio, timeScale }) {
+          this.path = pathEl;
+          this.noise = createNoise2D();
+          this.cx = cx;
+          this.cy = cy;
+          this.radius = radius;
+          this.seed = seed;
+          this.ampRatio = ampRatio;
+          this.timeScale = timeScale;
+        }
+
+        draw(time) {
+          const pts = [];
+          for (let i = 0; i < ANCHORS; i++) {
+            const angle = (i / ANCHORS) * Math.PI * 2;
+            const individual = reducedMotion
+              ? 0
+              : this.noise(
+                  Math.cos(angle) * 0.5 + this.seed,
+                  Math.sin(angle) * 0.5 + time * this.timeScale,
+                );
+            const r = this.radius + individual * this.radius * this.ampRatio;
+            pts.push({
+              x: this.cx + Math.cos(angle) * r,
+              y: this.cy + Math.sin(angle) * r,
+            });
+          }
+          this.path.setAttribute("d", blobPath(pts));
+        }
+      }
+
+      // Resting radii — the entrance shrinks .radius on these down toward
+      // 0 and grows it back, the same quantity BlobLayer's own collapse
+      // animates, rather than scaling the element that displays them.
+      const PHOTO_REST_RADIUS = 330;
+      const TEXT_REST_RADIUS = 0.42;
+
+      const photoBlob = new OrganicShape(
+        document.getElementById("work-photo-clip-path"),
+        {
+          cx: 400,
+          cy: 400,
+          radius: PHOTO_REST_RADIUS,
+          seed: 4.2,
+          ampRatio: 0.1,
+          timeScale: 0.00004,
+        },
+      );
+      const textBlob = new OrganicShape(
+        document.getElementById("work-text-clip-path"),
+        {
+          cx: 0.5,
+          cy: 0.5,
+          radius: TEXT_REST_RADIUS,
+          seed: 11.7,
+          ampRatio: 0.06,
+          timeScale: 0.00003,
+        },
+      );
+      const contactBlob = new OrganicShape(
+        document.getElementById("contact-text-clip-path"),
+        {
+          cx: 0.5,
+          cy: 0.5,
+          radius: TEXT_REST_RADIUS,
+          seed: 27.4,
+          ampRatio: 0.06,
+          timeScale: 0.000035,
+        },
+      );
+      photoBlob.draw(0);
+      textBlob.draw(0);
+      contactBlob.draw(0);
+
+      const layers = [
+        // Landing: no entrance (visible from page load), exits in window 0.
+        new ContentLayer(document.getElementById("layer-landing"), null, 0),
+        new BlobLayer(
+          document.getElementById("layer-blobs-1"),
+          0,
+          ["#e8590c", "#f76707", "#d9480f", "#ff7566"],
+          {
+            spacing: 300,
+            noiseScale: 1,
+            densityThreshold: 0.8,
+          },
+        ),
+        // Work: no generic zoom/fade — its feature blobs (below) animate
+        // their own grow-in (synced with Blobs-1's own exit window) and
+        // shrink-out (synced with Blobs-2's own exit window, 2) directly,
+        // the same collapse mechanic every ambient blob uses. animateVisuals
+        // false keeps this ContentLayer around only for pointer-events.
+        new ContentLayer(document.getElementById("layer-work"), null, 2, false),
+        new BlobLayer(
+          document.getElementById("layer-blobs-2"),
+          2,
+          ["#ffd166", "#ffb347", "#ff8c42", "#ffe066"],
+          {
+            spacing: 250,
+            noiseScale: 0.0035,
+            densityThreshold: 0.0,
+          },
+        ),
+        // Contact: same treatment as Work — no generic zoom/fade, its own
+        // blob (below) grows in over window 3 and shrinks out over window
+        // 4 directly. animateVisuals false keeps this around only for
+        // pointer-events.
+        new ContentLayer(
+          document.getElementById("layer-contact"),
+          null,
+          2,
+          false,
+        ),
+        new BlobLayer(
+          document.getElementById("layer-blobs-3"),
+          null,
+          ["#7a1f1f", "#5c1414", "#8f2d2d", "#c1272d"],
+          {
+            spacing: 350,
+            noiseScale: 0.0035,
+            densityThreshold: 0.0,
+          },
+        ),
+      ];
+
+      let progress = 0;
+
+      // Ramps 0 -> 1 over the landing layer's own exit window, then holds
+      // at 1 for the rest of the scroll — the ambient field is in full
+      // color only while landing is still on screen.
+      let grayscaleAmount = 0;
+      const landingExitWindow = windowFor(0);
+
+      // The Work feature blobs grow in sync with Blobs-1's own collapse
+      // window, and shrink out in sync with Blobs-2's own collapse
+      // window — same two windows those fields use, not separately timed.
+      const workEnterWindow = landingExitWindow;
+      const workExitWindow = windowFor(2);
+      let workEnterEff = 0;
+      let workExitEff = 0;
+
+      // Contact's blob has no adjacent field to sync with (Blobs-3 never
+      // collapses — it's the resting scene), so it keeps its own
+      // dedicated windows, but uses the same grow/shrink mechanic.
+      const contactEnterWindow = windowFor(3);
+      const contactExitWindow = windowFor(4);
+      let contactEnterEff = 0;
+      let contactExitEff = 0;
+
+      function updateProgress() {
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        progress = max > 0 ? clamp01(window.scrollY / max) : 0;
+        grayscaleAmount = easeOutCubic(
+          clamp01(
+            (progress - landingExitWindow.start) /
+              (landingExitWindow.end - landingExitWindow.start),
+          ),
+        );
+        workEnterEff = clamp01(
+          (progress - workEnterWindow.start) /
+            (workEnterWindow.end - workEnterWindow.start),
+        );
+        workExitEff = clamp01(
+          (progress - workExitWindow.start) /
+            (workExitWindow.end - workExitWindow.start),
+        );
+        contactEnterEff = clamp01(
+          (progress - contactEnterWindow.start) /
+            (contactEnterWindow.end - contactEnterWindow.start),
+        );
+        contactExitEff = clamp01(
+          (progress - contactExitWindow.start) /
+            (contactExitWindow.end - contactExitWindow.start),
+        );
+      }
+
+      const textBlobEl = document.querySelector(".text-blob");
+      const photoBlobEl = document.querySelector(".photo-blob-svg");
+      const contactBlobEl = document.querySelector(".contact-text-blob");
+
+      // Grow-in mirrors BlobLayer's own collapse curve (1 - eff^3) but
+      // inverted (eff^3, growing instead of shrinking); shrink-out uses
+      // that same collapse curve directly, unmodified — same formula
+      // BlobLayer uses for its own blobs' radius. Multiplying the two
+      // together gives a single scale that's 0 before entrance, 1 at
+      // rest between the two windows, and 0 again after exit, with no
+      // branching needed. No opacity animation either direction — radius
+      // alone carries the whole reveal/hide, position is left untouched
+      // (each element's CSS transform/layout is static) — only the
+      // radius fed into OrganicShape.draw() animates. Shared by Work's
+      // pair and Contact's single blob, just with different entries.
+      function animateFeatureBlobs(time, enterEff, exitEff, entries) {
+        const growScale = Math.pow(enterEff, 3);
+        const collapse = 1 - Math.pow(exitEff, 3);
+        const scale = growScale * collapse;
+
+        if (reducedMotion) {
+          const visible = enterEff * (1 - exitEff);
+          for (const { el } of entries) el.style.opacity = visible;
+          return;
+        }
+
+        for (const { shape, el, restRadius } of entries) {
+          shape.radius = restRadius * scale;
+          shape.draw(time);
+        }
+      }
+
+      function buildAll() {
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        for (const layer of layers) {
+          if (layer instanceof BlobLayer) layer.build(width, height);
+        }
+      }
+
+      const hud = document.getElementById("hud");
+
+      function animate(time) {
+        updateProgress();
+        for (const layer of layers) layer.render(time);
+        animateFeatureBlobs(time, workEnterEff, workExitEff, [
+          { shape: photoBlob, el: photoBlobEl, restRadius: PHOTO_REST_RADIUS },
+          { shape: textBlob, el: textBlobEl, restRadius: TEXT_REST_RADIUS },
+        ]);
+        animateFeatureBlobs(time, contactEnterEff, contactExitEff, [
+          {
+            shape: contactBlob,
+            el: contactBlobEl,
+            restRadius: TEXT_REST_RADIUS,
+          },
+        ]);
+
+        hud.textContent = `reduced-motion: ${reducedMotion}\nprogress: ${progress.toFixed(2)}\ngrayscale:${grayscaleAmount}`;
+
+        requestAnimationFrame(animate);
+      }
+
+      buildAll();
+      window.addEventListener("resize", buildAll);
+      requestAnimationFrame(animate);
+    </script>
+  </body>
+</html>
